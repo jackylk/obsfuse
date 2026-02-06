@@ -246,7 +246,7 @@ pub struct MetadataCacheStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuse3::FileType;
+    use crate::fs::platform::FileKind;
 
     fn test_config() -> MetadataCacheConfig {
         MetadataCacheConfig {
@@ -265,7 +265,7 @@ mod tests {
         let attr = FileAttr {
             ino: 42,
             size: 1024,
-            kind: FileType::RegularFile,
+            kind: FileKind::RegularFile,
             ..Default::default()
         };
 

@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tracing::debug;
 
+use crate::fs::platform::{is_readable, is_writable, is_append, is_truncate};
+
 /// File handle manager
 pub struct HandleManager {
     /// Handle to state mapping
@@ -39,8 +41,8 @@ pub struct HandleState {
 impl HandleState {
     /// Create a new handle state
     pub fn new(inode: u64, flags: u32, is_dir: bool) -> Self {
-        let writable = Self::is_writable(flags);
-        let readable = Self::is_readable(flags);
+        let writable = is_writable(flags);
+        let readable = is_readable(flags);
 
         Self {
             inode,
@@ -54,26 +56,14 @@ impl HandleState {
         }
     }
 
-    /// Check if flags indicate writable
-    fn is_writable(flags: u32) -> bool {
-        let access_mode = flags & libc::O_ACCMODE as u32;
-        access_mode == libc::O_WRONLY as u32 || access_mode == libc::O_RDWR as u32
-    }
-
-    /// Check if flags indicate readable
-    fn is_readable(flags: u32) -> bool {
-        let access_mode = flags & libc::O_ACCMODE as u32;
-        access_mode == libc::O_RDONLY as u32 || access_mode == libc::O_RDWR as u32
-    }
-
     /// Check if opened with O_APPEND
     pub fn is_append(&self) -> bool {
-        self.flags & libc::O_APPEND as u32 != 0
+        is_append(self.flags)
     }
 
     /// Check if opened with O_TRUNC
     pub fn is_truncate(&self) -> bool {
-        self.flags & libc::O_TRUNC as u32 != 0
+        is_truncate(self.flags)
     }
 
     /// Update position after read/write
@@ -222,14 +212,15 @@ pub struct HandleStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fs::platform::open_flags;
 
     #[test]
     fn test_handle_manager() {
         let manager = HandleManager::new();
 
-        let h1 = manager.open(1, libc::O_RDONLY as u32, false);
-        let h2 = manager.open(1, libc::O_RDWR as u32, false);
-        let h3 = manager.open(2, libc::O_WRONLY as u32, false);
+        let h1 = manager.open(1, open_flags::O_RDONLY, false);
+        let h2 = manager.open(1, open_flags::O_RDWR, false);
+        let h3 = manager.open(2, open_flags::O_WRONLY, false);
 
         assert!(manager.get(h1).is_some());
         assert!(manager.get(h2).is_some());
@@ -247,19 +238,19 @@ mod tests {
 
     #[test]
     fn test_handle_state_flags() {
-        let state = HandleState::new(1, libc::O_RDONLY as u32, false);
+        let state = HandleState::new(1, open_flags::O_RDONLY, false);
         assert!(state.readable);
         assert!(!state.writable);
 
-        let state = HandleState::new(1, libc::O_WRONLY as u32, false);
+        let state = HandleState::new(1, open_flags::O_WRONLY, false);
         assert!(!state.readable);
         assert!(state.writable);
 
-        let state = HandleState::new(1, libc::O_RDWR as u32, false);
+        let state = HandleState::new(1, open_flags::O_RDWR, false);
         assert!(state.readable);
         assert!(state.writable);
 
-        let state = HandleState::new(1, (libc::O_WRONLY | libc::O_APPEND) as u32, false);
+        let state = HandleState::new(1, open_flags::O_WRONLY | open_flags::O_APPEND, false);
         assert!(state.is_append());
     }
 }

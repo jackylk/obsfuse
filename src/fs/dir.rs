@@ -2,8 +2,9 @@
 //!
 //! This module handles directory listing and entry management.
 
-use fuse3::FileType;
 use std::ffi::OsString;
+
+use crate::fs::platform::FileKind;
 
 /// Directory entry for readdir operations
 #[derive(Debug, Clone)]
@@ -13,14 +14,14 @@ pub struct DirEntry {
     /// Entry name
     pub name: OsString,
     /// File type
-    pub kind: FileType,
+    pub kind: FileKind,
     /// Offset for next entry
     pub offset: i64,
 }
 
 impl DirEntry {
     /// Create a new directory entry
-    pub fn new(inode: u64, name: impl Into<OsString>, kind: FileType, offset: i64) -> Self {
+    pub fn new(inode: u64, name: impl Into<OsString>, kind: FileKind, offset: i64) -> Self {
         Self {
             inode,
             name: name.into(),
@@ -31,12 +32,12 @@ impl DirEntry {
 
     /// Create entry for "."
     pub fn dot(inode: u64) -> Self {
-        Self::new(inode, ".", FileType::Directory, 1)
+        Self::new(inode, ".", FileKind::Directory, 1)
     }
 
     /// Create entry for ".."
     pub fn dotdot(parent_inode: u64) -> Self {
-        Self::new(parent_inode, "..", FileType::Directory, 2)
+        Self::new(parent_inode, "..", FileKind::Directory, 2)
     }
 }
 
@@ -146,10 +147,10 @@ mod tests {
 
     #[test]
     fn test_dir_entry() {
-        let entry = DirEntry::new(42, "test.txt", FileType::RegularFile, 1);
+        let entry = DirEntry::new(42, "test.txt", FileKind::RegularFile, 1);
         assert_eq!(entry.inode, 42);
         assert_eq!(entry.name, OsString::from("test.txt"));
-        assert_eq!(entry.kind, FileType::RegularFile);
+        assert_eq!(entry.kind, FileKind::RegularFile);
     }
 
     #[test]

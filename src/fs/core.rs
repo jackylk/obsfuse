@@ -1,16 +1,13 @@
-//! Main OBS FUSE filesystem implementation
+//! Core filesystem operations for OBS FUSE
 //!
-//! This module implements the fuse3 Filesystem trait to provide
-//! a POSIX-compatible interface to OBS object storage.
+//! This module contains the platform-independent core logic that is shared
+//! between the Unix FUSE and Windows WinFSP implementations.
 
 use bytes::Bytes;
-use fuse3::raw::prelude::*;
-use fuse3::{Errno, FileType, Inode, Result as FuseResult, SetAttr, Timestamp};
 use std::ffi::OsStr;
-use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use tracing::{error, info, instrument};
+use tracing::error;
 
 use crate::cache::{
     DataCache, MetadataCache, ReadaheadConfig, ReadaheadManager, WriteBuffer, WriteBufferConfig,
@@ -20,39 +17,73 @@ use crate::fs::attr::AttrBuilder;
 use crate::fs::dir::DirEntry;
 use crate::fs::handle::HandleManager;
 use crate::fs::inode::{FileAttr, InodeManager, ROOT_INODE};
+use crate::fs::platform::{errno, FileKind};
 use crate::storage::ObsClient;
 use crate::utils::{Metrics, ObsFuseError};
 
-/// OBS FUSE filesystem
-pub struct ObsFs {
-    /// Inode manager
-    inode_mgr: Arc<InodeManager>,
-    /// Metadata cache
-    metadata_cache: Arc<MetadataCache>,
-    /// Data cache
-    data_cache: Arc<DataCache>,
-    /// Read-ahead manager
-    readahead: Arc<ReadaheadManager>,
-    /// Write buffer
-    write_buffer: Arc<WriteBuffer>,
-    /// OBS client
-    obs_client: Arc<ObsClient>,
-    /// File handle manager
-    handle_mgr: Arc<HandleManager>,
-    /// Configuration
-    config: Arc<Config>,
-    /// Metrics
-    metrics: Arc<Metrics>,
-    /// Attribute builder
-    attr_builder: AttrBuilder<'static>,
-    /// Attribute TTL
-    attr_ttl: Duration,
-    /// Entry TTL
-    entry_ttl: Duration,
+/// Core filesystem error type
+#[derive(Debug)]
+pub struct FsError {
+    pub errno: i32,
 }
 
-impl ObsFs {
-    /// Create a new OBS filesystem
+impl FsError {
+    pub fn new(errno: i32) -> Self {
+        Self { errno }
+    }
+
+    pub fn not_found() -> Self {
+        Self::new(errno::ENOENT)
+    }
+
+    pub fn io_error() -> Self {
+        Self::new(errno::EIO)
+    }
+
+    pub fn not_empty() -> Self {
+        Self::new(errno::ENOTEMPTY)
+    }
+}
+
+impl From<i32> for FsError {
+    fn from(errno: i32) -> Self {
+        Self::new(errno)
+    }
+}
+
+/// Result type for core filesystem operations
+pub type FsResult<T> = Result<T, FsError>;
+
+/// Core OBS filesystem logic shared between platforms
+pub struct ObsFsCore {
+    /// Inode manager
+    pub inode_mgr: Arc<InodeManager>,
+    /// Metadata cache
+    pub metadata_cache: Arc<MetadataCache>,
+    /// Data cache
+    pub data_cache: Arc<DataCache>,
+    /// Read-ahead manager
+    pub readahead: Arc<ReadaheadManager>,
+    /// Write buffer
+    pub write_buffer: Arc<WriteBuffer>,
+    /// OBS client
+    pub obs_client: Arc<ObsClient>,
+    /// File handle manager
+    pub handle_mgr: Arc<HandleManager>,
+    /// Configuration
+    pub config: Arc<Config>,
+    /// Metrics
+    pub metrics: Arc<Metrics>,
+    /// Attribute builder (owned, created with 'static lifetime trick)
+    attr_builder: AttrBuilder<'static>,
+    /// Attribute TTL
+    pub attr_ttl: Duration,
+    /// Entry TTL
+    pub entry_ttl: Duration,
+}
+
+impl ObsFsCore {
+    /// Create a new OBS filesystem core
     pub fn new(config: Config, metrics: Arc<Metrics>) -> Result<Self, ObsFuseError> {
         let config = Arc::new(config);
 
@@ -108,14 +139,14 @@ impl ObsFs {
     }
 
     /// Get path for an inode
-    fn get_path(&self, inode: u64) -> Result<String, Errno> {
+    pub fn get_path(&self, inode: u64) -> FsResult<String> {
         self.inode_mgr
             .get_path(inode)
-            .ok_or(Errno::from(libc::ENOENT))
+            .ok_or_else(FsError::not_found)
     }
 
     /// Build full OBS path with optional prefix
-    fn obs_path(&self, path: &str) -> String {
+    pub fn obs_path(&self, path: &str) -> String {
         if let Some(ref prefix) = self.config.obs.prefix {
             if path.is_empty() {
                 prefix.clone()
@@ -128,14 +159,14 @@ impl ObsFs {
     }
 
     /// Lookup a name in a directory
-    async fn do_lookup(&self, parent: u64, name: &OsStr) -> Result<(u64, FileAttr), Errno> {
+    pub async fn do_lookup(&self, parent: u64, name: &OsStr) -> FsResult<(u64, FileAttr)> {
         let parent_path = self.get_path(parent)?;
         let name_str = name.to_string_lossy();
         let child_path = InodeManager::join_path(&parent_path, &name_str);
 
         // Check negative cache
         if self.metadata_cache.is_negative(&child_path) {
-            return Err(Errno::from(libc::ENOENT));
+            return Err(FsError::not_found());
         }
 
         // Check if already cached
@@ -185,11 +216,11 @@ impl ObsFs {
 
         // Not found
         self.metadata_cache.put_negative(&child_path);
-        Err(Errno::from(libc::ENOENT))
+        Err(FsError::not_found())
     }
 
     /// Read directory entries
-    async fn do_readdir(&self, inode: u64, offset: i64) -> Result<Vec<DirEntry>, Errno> {
+    pub async fn do_readdir(&self, inode: u64, offset: i64) -> FsResult<Vec<DirEntry>> {
         let path = self.get_path(inode)?;
         let obs_path = self.obs_path(&path);
 
@@ -223,7 +254,7 @@ impl ObsFs {
             .await
             .map_err(|e| {
                 error!(error = %e, "Failed to list directory");
-                Errno::from(libc::EIO)
+                FsError::io_error()
             })?;
 
         let mut child_inodes = Vec::new();
@@ -244,9 +275,9 @@ impl ObsFs {
             let child_inode = self.inode_mgr.get_or_create_inode(&child_path, meta.is_dir, meta.size);
 
             let kind = if meta.is_dir {
-                FileType::Directory
+                FileKind::Directory
             } else {
-                FileType::RegularFile
+                FileKind::RegularFile
             };
 
             entries.push(DirEntry::new(child_inode, name, kind, entry_offset));
@@ -264,73 +295,14 @@ impl ObsFs {
 
         Ok(entries)
     }
-}
-
-/// Convert fuse3 Timestamp to SystemTime
-fn timestamp_to_systemtime(ts: Timestamp) -> SystemTime {
-    let duration = std::time::Duration::new(ts.sec as u64, ts.nsec);
-    if ts.sec >= 0 {
-        std::time::UNIX_EPOCH + duration
-    } else {
-        std::time::UNIX_EPOCH
-    }
-}
-
-impl Filesystem for ObsFs {
-    type DirEntryStream<'a> = futures::stream::Iter<std::vec::IntoIter<FuseResult<DirectoryEntry>>> where Self: 'a;
-    type DirEntryPlusStream<'a> = futures::stream::Iter<std::vec::IntoIter<FuseResult<DirectoryEntryPlus>>> where Self: 'a;
-
-    /// Initialize filesystem
-    #[instrument(skip(self, _req), level = "debug")]
-    async fn init(&self, _req: Request) -> FuseResult<ReplyInit> {
-        info!("Initializing OBS FUSE filesystem");
-        Ok(ReplyInit {
-            max_write: NonZeroU32::new(self.config.fuse.max_write.as_u64() as u32).unwrap(),
-        })
-    }
-
-    /// Clean up filesystem
-    #[instrument(skip(self, _req), level = "debug")]
-    async fn destroy(&self, _req: Request) {
-        info!("Destroying OBS FUSE filesystem");
-
-        // Flush all write buffers
-        if let Err(e) = self.write_buffer.flush_all().await {
-            error!(error = %e, "Failed to flush write buffers on destroy");
-        }
-    }
-
-    /// Look up a directory entry
-    #[instrument(skip(self, _req), level = "debug")]
-    async fn lookup(&self, _req: Request, parent: Inode, name: &OsStr) -> FuseResult<ReplyEntry> {
-        self.metrics.inc_lookup_ops();
-
-        let (_inode, attr) = self.do_lookup(parent, name).await?;
-
-        Ok(ReplyEntry {
-            ttl: self.entry_ttl,
-            attr: attr.to_fuse3(),
-            generation: 0,
-        })
-    }
 
     /// Get file attributes
-    #[instrument(skip(self, _req), level = "debug")]
-    async fn getattr(
-        &self,
-        _req: Request,
-        inode: Inode,
-        _fh: Option<u64>,
-        _flags: u32,
-    ) -> FuseResult<ReplyAttr> {
+    pub async fn do_getattr(&self, inode: u64) -> FsResult<FileAttr> {
         self.metrics.inc_getattr_ops();
 
         // Check cache first
         if let Some(attr) = self.metadata_cache.get_attr(inode) {
-            return Ok(ReplyAttr {
-                ttl: self.attr_ttl,
-                attr: attr.to_fuse3(),
-            });
+            return Ok(attr);
         }
 
         // Fetch from OBS
@@ -339,133 +311,20 @@ impl Filesystem for ObsFs {
 
         let meta = self.obs_client.stat(&obs_path).await.map_err(|e| {
             if matches!(e, ObsFuseError::Storage(ref se) if se.kind() == opendal::ErrorKind::NotFound) {
-                // Try as directory
-                return Errno::from(libc::ENOENT);
+                return FsError::not_found();
             }
             error!(error = %e, "Failed to get attributes");
-            Errno::from(libc::EIO)
+            FsError::io_error()
         })?;
 
         let attr = self.attr_builder.from_object_meta(inode, &meta);
         self.metadata_cache.put_attr(inode, attr.clone());
 
-        Ok(ReplyAttr {
-            ttl: self.attr_ttl,
-            attr: attr.to_fuse3(),
-        })
-    }
-
-    /// Set file attributes
-    #[instrument(skip(self, _req), level = "debug")]
-    async fn setattr(
-        &self,
-        _req: Request,
-        inode: Inode,
-        _fh: Option<u64>,
-        set_attr: SetAttr,
-    ) -> FuseResult<ReplyAttr> {
-        let path = self.get_path(inode)?;
-
-        // Handle truncate
-        if let Some(size) = set_attr.size {
-            let obs_path = self.obs_path(&path);
-            self.write_buffer.truncate(inode, &obs_path, size).await.map_err(|e| {
-                error!(error = %e, "Failed to truncate");
-                Errno::from(libc::EIO)
-            })?;
-
-            // Invalidate caches
-            self.data_cache.invalidate(inode);
-            self.readahead.invalidate(inode);
-        }
-
-        // Update cached attributes
-        let attr = if let Some(mut attr) = self.metadata_cache.get_attr(inode) {
-            // Apply mode if provided
-            if let Some(mode) = set_attr.mode {
-                attr.perm = (mode & 0o7777) as u16;
-            }
-            // Apply uid/gid if provided
-            if let Some(uid) = set_attr.uid {
-                attr.uid = uid;
-            }
-            if let Some(gid) = set_attr.gid {
-                attr.gid = gid;
-            }
-            // Apply size if provided
-            if let Some(size) = set_attr.size {
-                attr.size = size;
-                attr.blocks = (size + 511) / 512;
-            }
-            // Apply atime if provided
-            if let Some(atime) = set_attr.atime {
-                attr.atime = timestamp_to_systemtime(atime);
-            }
-            // Apply mtime if provided
-            if let Some(mtime) = set_attr.mtime {
-                attr.mtime = timestamp_to_systemtime(mtime);
-            }
-
-            self.metadata_cache.put_attr(inode, attr.clone());
-            attr
-        } else {
-            // Create new attributes
-            let entry = self.inode_mgr.get_entry(inode).ok_or(Errno::from(libc::ENOENT))?;
-            let mut attr = entry.attr;
-
-            if let Some(mode) = set_attr.mode {
-                attr.perm = (mode & 0o7777) as u16;
-            }
-            if let Some(uid) = set_attr.uid {
-                attr.uid = uid;
-            }
-            if let Some(gid) = set_attr.gid {
-                attr.gid = gid;
-            }
-            if let Some(size) = set_attr.size {
-                attr.size = size;
-                attr.blocks = (size + 511) / 512;
-            }
-
-            self.metadata_cache.put_attr(inode, attr.clone());
-            attr
-        };
-
-        Ok(ReplyAttr {
-            ttl: self.attr_ttl,
-            attr: attr.to_fuse3(),
-        })
-    }
-
-    /// Open a file
-    #[instrument(skip(self, _req), level = "debug")]
-    async fn open(&self, _req: Request, inode: Inode, flags: u32) -> FuseResult<ReplyOpen> {
-        let fh = self.handle_mgr.open(inode, flags, false);
-
-        // Handle O_TRUNC
-        if flags & libc::O_TRUNC as u32 != 0 {
-            let path = self.get_path(inode)?;
-            let obs_path = self.obs_path(&path);
-            self.write_buffer.truncate(inode, &obs_path, 0).await.map_err(|e| {
-                error!(error = %e, "Failed to truncate on open");
-                Errno::from(libc::EIO)
-            })?;
-            self.data_cache.invalidate(inode);
-        }
-
-        Ok(ReplyOpen { fh, flags: 0 })
+        Ok(attr)
     }
 
     /// Read from a file
-    #[instrument(skip(self, _req), level = "debug")]
-    async fn read(
-        &self,
-        _req: Request,
-        inode: Inode,
-        fh: u64,
-        offset: u64,
-        size: u32,
-    ) -> FuseResult<ReplyData> {
+    pub async fn do_read(&self, inode: u64, fh: u64, offset: u64, size: u32) -> FsResult<Bytes> {
         self.metrics.inc_read_ops();
 
         let path = self.get_path(inode)?;
@@ -479,9 +338,7 @@ impl Filesystem for ObsFs {
         // Check read-ahead buffer
         if let Some(data) = self.readahead.get_prefetched(inode, offset) {
             let end = (size as usize).min(data.len());
-            return Ok(ReplyData {
-                data: data.slice(0..end),
-            });
+            return Ok(data.slice(0..end));
         }
 
         // Check data cache
@@ -489,9 +346,7 @@ impl Filesystem for ObsFs {
             let start = (offset % self.data_cache.block_size()) as usize;
             let end = (start + size as usize).min(data.len());
             if start < data.len() {
-                return Ok(ReplyData {
-                    data: data.slice(start..end),
-                });
+                return Ok(data.slice(start..end));
             }
         }
 
@@ -502,7 +357,7 @@ impl Filesystem for ObsFs {
             .await
             .map_err(|e| {
                 error!(error = %e, "Failed to read");
-                Errno::from(libc::EIO)
+                FsError::io_error()
             })?;
 
         // Cache the data
@@ -520,21 +375,11 @@ impl Filesystem for ObsFs {
 
         self.metrics.add_read_bytes(data.len() as u64);
 
-        Ok(ReplyData { data })
+        Ok(data)
     }
 
     /// Write to a file
-    #[instrument(skip(self, _req, data), level = "debug")]
-    async fn write(
-        &self,
-        _req: Request,
-        inode: Inode,
-        fh: u64,
-        offset: u64,
-        data: &[u8],
-        _write_flags: u32,
-        _flags: u32,
-    ) -> FuseResult<ReplyWrite> {
+    pub async fn do_write(&self, inode: u64, fh: u64, offset: u64, data: &[u8]) -> FsResult<usize> {
         self.metrics.inc_write_ops();
 
         let path = self.get_path(inode)?;
@@ -554,7 +399,7 @@ impl Filesystem for ObsFs {
             .await
             .map_err(|e| {
                 error!(error = %e, "Failed to write");
-                Errno::from(libc::EIO)
+                FsError::io_error()
             })?;
 
         // Update handle state
@@ -576,102 +421,11 @@ impl Filesystem for ObsFs {
 
         self.metrics.add_write_bytes(written as u64);
 
-        Ok(ReplyWrite {
-            written: written as u32,
-        })
-    }
-
-    /// Release (close) a file
-    #[instrument(skip(self, _req), level = "debug")]
-    async fn release(
-        &self,
-        _req: Request,
-        inode: Inode,
-        fh: u64,
-        _flags: u32,
-        _lock_owner: u64,
-        _flush: bool,
-    ) -> FuseResult<()> {
-        // Flush write buffer
-        self.write_buffer.release(inode).await.map_err(|e| {
-            error!(error = %e, "Failed to flush on release");
-            Errno::from(libc::EIO)
-        })?;
-
-        // Close handle
-        self.handle_mgr.close(fh);
-
-        // Invalidate metadata cache to ensure consistency
-        self.metadata_cache.invalidate_attr(inode);
-
-        Ok(())
-    }
-
-    /// Synchronize file contents
-    #[instrument(skip(self, _req), level = "debug")]
-    async fn fsync(&self, _req: Request, inode: Inode, _fh: u64, _datasync: bool) -> FuseResult<()> {
-        self.write_buffer.sync_flush(inode).await.map_err(|e| {
-            error!(error = %e, "Failed to fsync");
-            Errno::from(libc::EIO)
-        })?;
-
-        Ok(())
-    }
-
-    /// Open a directory
-    #[instrument(skip(self, _req), level = "debug")]
-    async fn opendir(&self, _req: Request, inode: Inode, flags: u32) -> FuseResult<ReplyOpen> {
-        let fh = self.handle_mgr.open(inode, flags, true);
-        Ok(ReplyOpen { fh, flags: 0 })
-    }
-
-    /// Read directory entries
-    #[instrument(skip(self, _req), level = "debug")]
-    async fn readdir(
-        &self,
-        _req: Request,
-        inode: Inode,
-        _fh: u64,
-        offset: i64,
-    ) -> FuseResult<ReplyDirectory<Self::DirEntryStream<'_>>> {
-        self.metrics.inc_readdir_ops();
-
-        let entries = self.do_readdir(inode, offset).await?;
-
-        let dir_entries: Vec<FuseResult<DirectoryEntry>> = entries
-            .into_iter()
-            .map(|e| {
-                Ok(DirectoryEntry {
-                    inode: e.inode,
-                    kind: e.kind,
-                    name: e.name,
-                    offset: e.offset,
-                })
-            })
-            .collect();
-
-        Ok(ReplyDirectory {
-            entries: futures::stream::iter(dir_entries),
-        })
-    }
-
-    /// Release (close) a directory
-    #[instrument(skip(self, _req), level = "debug")]
-    async fn releasedir(&self, _req: Request, _inode: Inode, fh: u64, _flags: u32) -> FuseResult<()> {
-        self.handle_mgr.close(fh);
-        Ok(())
+        Ok(written)
     }
 
     /// Create a file
-    #[instrument(skip(self, _req), level = "debug")]
-    async fn create(
-        &self,
-        _req: Request,
-        parent: Inode,
-        name: &OsStr,
-        mode: u32,
-        flags: u32,
-    ) -> FuseResult<ReplyCreated> {
+    pub async fn do_create(&self, parent: u64, name: &OsStr, mode: u32, flags: u32) -> FsResult<(u64, FileAttr, u64)> {
         let parent_path = self.get_path(parent)?;
         let name_str = name.to_string_lossy();
         let child_path = InodeManager::join_path(&parent_path, &name_str);
@@ -683,7 +437,7 @@ impl Filesystem for ObsFs {
             .await
             .map_err(|e| {
                 error!(error = %e, "Failed to create file");
-                Errno::from(libc::EIO)
+                FsError::io_error()
             })?;
 
         // Create inode
@@ -700,25 +454,11 @@ impl Filesystem for ObsFs {
         // Open handle
         let fh = self.handle_mgr.open(inode, flags, false);
 
-        Ok(ReplyCreated {
-            ttl: self.entry_ttl,
-            attr: attr.to_fuse3(),
-            generation: 0,
-            fh,
-            flags: 0,
-        })
+        Ok((inode, attr, fh))
     }
 
     /// Create a directory
-    #[instrument(skip(self, _req), level = "debug")]
-    async fn mkdir(
-        &self,
-        _req: Request,
-        parent: Inode,
-        name: &OsStr,
-        mode: u32,
-        _umask: u32,
-    ) -> FuseResult<ReplyEntry> {
+    pub async fn do_mkdir(&self, parent: u64, name: &OsStr, mode: u32) -> FsResult<(u64, FileAttr)> {
         let parent_path = self.get_path(parent)?;
         let name_str = name.to_string_lossy();
         let child_path = InodeManager::join_path(&parent_path, &name_str);
@@ -727,7 +467,7 @@ impl Filesystem for ObsFs {
         // Create directory marker in OBS
         self.obs_client.create_dir(&obs_path).await.map_err(|e| {
             error!(error = %e, "Failed to create directory");
-            Errno::from(libc::EIO)
+            FsError::io_error()
         })?;
 
         // Create inode
@@ -741,16 +481,11 @@ impl Filesystem for ObsFs {
         // Invalidate parent directory cache
         self.metadata_cache.invalidate_dir(parent);
 
-        Ok(ReplyEntry {
-            ttl: self.entry_ttl,
-            attr: attr.to_fuse3(),
-            generation: 0,
-        })
+        Ok((inode, attr))
     }
 
     /// Remove a file
-    #[instrument(skip(self, _req), level = "debug")]
-    async fn unlink(&self, _req: Request, parent: Inode, name: &OsStr) -> FuseResult<()> {
+    pub async fn do_unlink(&self, parent: u64, name: &OsStr) -> FsResult<()> {
         let parent_path = self.get_path(parent)?;
         let name_str = name.to_string_lossy();
         let child_path = InodeManager::join_path(&parent_path, &name_str);
@@ -759,7 +494,7 @@ impl Filesystem for ObsFs {
         // Delete from OBS
         self.obs_client.delete(&obs_path).await.map_err(|e| {
             error!(error = %e, "Failed to delete file");
-            Errno::from(libc::EIO)
+            FsError::io_error()
         })?;
 
         // Remove inode
@@ -777,8 +512,7 @@ impl Filesystem for ObsFs {
     }
 
     /// Remove a directory
-    #[instrument(skip(self, _req), level = "debug")]
-    async fn rmdir(&self, _req: Request, parent: Inode, name: &OsStr) -> FuseResult<()> {
+    pub async fn do_rmdir(&self, parent: u64, name: &OsStr) -> FsResult<()> {
         let parent_path = self.get_path(parent)?;
         let name_str = name.to_string_lossy();
         let child_path = InodeManager::join_path(&parent_path, &name_str);
@@ -788,7 +522,7 @@ impl Filesystem for ObsFs {
         let list_prefix = format!("{}/", obs_path.trim_end_matches('/'));
         let entries = self.obs_client.list(&list_prefix).await.map_err(|e| {
             error!(error = %e, "Failed to list directory");
-            Errno::from(libc::EIO)
+            FsError::io_error()
         })?;
 
         // Filter out the directory marker itself
@@ -798,7 +532,7 @@ impl Filesystem for ObsFs {
             .collect();
 
         if !non_marker_entries.is_empty() {
-            return Err(Errno::from(libc::ENOTEMPTY).into());
+            return Err(FsError::not_empty());
         }
 
         // Delete directory marker
@@ -818,15 +552,7 @@ impl Filesystem for ObsFs {
     }
 
     /// Rename a file or directory
-    #[instrument(skip(self, _req), level = "debug")]
-    async fn rename(
-        &self,
-        _req: Request,
-        parent: Inode,
-        name: &OsStr,
-        new_parent: Inode,
-        new_name: &OsStr,
-    ) -> FuseResult<()> {
+    pub async fn do_rename(&self, parent: u64, name: &OsStr, new_parent: u64, new_name: &OsStr) -> FsResult<()> {
         let parent_path = self.get_path(parent)?;
         let new_parent_path = self.get_path(new_parent)?;
 
@@ -842,12 +568,12 @@ impl Filesystem for ObsFs {
             .await
             .map_err(|e| {
                 error!(error = %e, "Failed to copy for rename");
-                Errno::from(libc::EIO)
+                FsError::io_error()
             })?;
 
         self.obs_client.delete(&old_obs_path).await.map_err(|e| {
             error!(error = %e, "Failed to delete after rename");
-            Errno::from(libc::EIO)
+            FsError::io_error()
         })?;
 
         // Update inode mapping
@@ -865,42 +591,91 @@ impl Filesystem for ObsFs {
         Ok(())
     }
 
-    /// Get filesystem statistics
-    #[instrument(skip(self, _req), level = "debug")]
-    async fn statfs(&self, _req: Request, _inode: Inode) -> FuseResult<ReplyStatFs> {
-        // Return reasonable defaults for object storage
-        Ok(ReplyStatFs {
-            blocks: 1024 * 1024 * 1024, // 1PB in 1KB blocks
-            bfree: 1024 * 1024 * 1024,
-            bavail: 1024 * 1024 * 1024,
-            files: 1_000_000_000,
-            ffree: 1_000_000_000,
-            bsize: 4096,
-            namelen: 1024,
-            frsize: 4096,
-        })
+    /// Open a file
+    pub fn do_open(&self, inode: u64, flags: u32) -> u64 {
+        self.handle_mgr.open(inode, flags, false)
+    }
+
+    /// Open a directory
+    pub fn do_opendir(&self, inode: u64, flags: u32) -> u64 {
+        self.handle_mgr.open(inode, flags, true)
+    }
+
+    /// Close a handle
+    pub fn do_close(&self, fh: u64) {
+        self.handle_mgr.close(fh);
+    }
+
+    /// Release a file (flush and close)
+    pub async fn do_release(&self, inode: u64, fh: u64) -> FsResult<()> {
+        // Flush write buffer
+        self.write_buffer.release(inode).await.map_err(|e| {
+            error!(error = %e, "Failed to flush on release");
+            FsError::io_error()
+        })?;
+
+        // Close handle
+        self.handle_mgr.close(fh);
+
+        // Invalidate metadata cache to ensure consistency
+        self.metadata_cache.invalidate_attr(inode);
+
+        Ok(())
+    }
+
+    /// Synchronize file contents
+    pub async fn do_fsync(&self, inode: u64) -> FsResult<()> {
+        self.write_buffer.sync_flush(inode).await.map_err(|e| {
+            error!(error = %e, "Failed to fsync");
+            FsError::io_error()
+        })?;
+
+        Ok(())
     }
 
     /// Flush file data
-    #[instrument(skip(self, _req), level = "debug")]
-    async fn flush(&self, _req: Request, inode: Inode, _fh: u64, _lock_owner: u64) -> FuseResult<()> {
+    pub async fn do_flush(&self, inode: u64) -> FsResult<()> {
         self.write_buffer.flush(inode).await.map_err(|e| {
             error!(error = %e, "Failed to flush");
-            Errno::from(libc::EIO)
+            FsError::io_error()
+        })?;
+
+        Ok(())
+    }
+
+    /// Truncate file
+    pub async fn do_truncate(&self, inode: u64, size: u64) -> FsResult<()> {
+        let path = self.get_path(inode)?;
+        let obs_path = self.obs_path(&path);
+
+        self.write_buffer.truncate(inode, &obs_path, size).await.map_err(|e| {
+            error!(error = %e, "Failed to truncate");
+            FsError::io_error()
+        })?;
+
+        // Invalidate caches
+        self.data_cache.invalidate(inode);
+        self.readahead.invalidate(inode);
+
+        Ok(())
+    }
+
+    /// Flush all write buffers (for destroy)
+    pub async fn flush_all(&self) -> FsResult<()> {
+        self.write_buffer.flush_all().await.map_err(|e| {
+            error!(error = %e, "Failed to flush write buffers");
+            FsError::io_error()
         })?;
 
         Ok(())
     }
 
     /// Check file access permissions
-    #[instrument(skip(self, _req), level = "debug")]
-    async fn access(&self, _req: Request, inode: Inode, _mask: u32) -> FuseResult<()> {
-        // For now, allow all access
-        // A full implementation would check against the permission config
+    pub fn do_access(&self, inode: u64) -> FsResult<()> {
         if self.inode_mgr.get_entry(inode).is_some() {
             Ok(())
         } else {
-            Err(Errno::from(libc::ENOENT).into())
+            Err(FsError::not_found())
         }
     }
 }

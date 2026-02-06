@@ -4,14 +4,15 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use fuse3::MountOptions;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::signal;
 use tracing::{error, info};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-use obsfuse::{Config, Metrics, ObsFs};
+use obsfuse::{Config, Metrics};
+
+#[cfg(unix)]
+use obsfuse::ObsFs;
 
 /// OBS FUSE - Mount Huawei Cloud OBS as a local filesystem
 #[derive(Parser, Debug)]
@@ -232,54 +233,16 @@ async fn main() -> Result<()> {
             // Create metrics
             let metrics = Arc::new(Metrics::new());
 
-            // Create filesystem
-            let fs = ObsFs::new(config.clone(), metrics.clone())
-                .context("Failed to create filesystem")?;
-
-            // Ensure mount point exists
-            if !mountpoint.exists() {
-                std::fs::create_dir_all(&mountpoint)
-                    .context("Failed to create mount point directory")?;
+            // Mount filesystem (platform-specific)
+            #[cfg(unix)]
+            {
+                mount_unix(config, metrics, &mountpoint).await?;
             }
 
-            // Build mount options
-            let mut mount_options = MountOptions::default();
-            mount_options.fs_name(&config.fuse.fs_name);
-            mount_options.read_only(config.fuse.read_only);
-
-            if config.fuse.allow_root {
-                mount_options.allow_root(true);
-            }
-            if config.fuse.allow_other {
-                mount_options.allow_other(true);
-            }
-
-            info!(
-                bucket = %config.obs.bucket,
-                mountpoint = %mountpoint.display(),
-                "Mounting OBS filesystem"
-            );
-
-            // Mount the filesystem
-            let mount_handle = fuse3::raw::Session::new(mount_options)
-                .mount_with_unprivileged(fs, &mountpoint)
-                .await
-                .context("Failed to mount filesystem")?;
-
-            info!("Filesystem mounted successfully");
-
-            // Handle signals
-            let handle = mount_handle;
-            tokio::select! {
-                _ = signal::ctrl_c() => {
-                    info!("Received interrupt signal, unmounting...");
-                }
-                result = handle => {
-                    match result {
-                        Ok(()) => info!("Filesystem unmounted"),
-                        Err(e) => error!(error = %e, "Filesystem error"),
-                    }
-                }
+            #[cfg(windows)]
+            {
+                let mountpoint_str = mountpoint.to_string_lossy().to_string();
+                obsfuse::fs::mount_winfsp(config, metrics, &mountpoint_str).await?;
             }
 
             info!("Shutdown complete");
@@ -292,6 +255,69 @@ async fn main() -> Result<()> {
         Commands::Version => {
             println!("obsfuse {}", env!("CARGO_PKG_VERSION"));
             println!("A high-performance FUSE filesystem for Huawei Cloud OBS");
+            #[cfg(unix)]
+            println!("Platform: Unix (FUSE)");
+            #[cfg(windows)]
+            println!("Platform: Windows (WinFSP)");
+        }
+    }
+
+    Ok(())
+}
+
+/// Mount filesystem on Unix using FUSE
+#[cfg(unix)]
+async fn mount_unix(config: Config, metrics: Arc<Metrics>, mountpoint: &PathBuf) -> Result<()> {
+    use fuse3::MountOptions;
+    use tokio::signal;
+
+    // Create filesystem
+    let fs = ObsFs::new(config.clone(), metrics.clone())
+        .context("Failed to create filesystem")?;
+
+    // Ensure mount point exists
+    if !mountpoint.exists() {
+        std::fs::create_dir_all(mountpoint)
+            .context("Failed to create mount point directory")?;
+    }
+
+    // Build mount options
+    let mut mount_options = MountOptions::default();
+    mount_options.fs_name(&config.fuse.fs_name);
+    mount_options.read_only(config.fuse.read_only);
+
+    if config.fuse.allow_root {
+        mount_options.allow_root(true);
+    }
+    if config.fuse.allow_other {
+        mount_options.allow_other(true);
+    }
+
+    info!(
+        bucket = %config.obs.bucket,
+        mountpoint = %mountpoint.display(),
+        "Mounting OBS filesystem"
+    );
+
+    // Mount the filesystem
+    let mount_handle = fuse3::raw::Session::new(mount_options)
+        .mount_with_unprivileged(fs, mountpoint)
+        .await
+        .context("Failed to mount filesystem")?;
+
+    info!("Filesystem mounted successfully");
+
+    // Handle signals
+    let handle = mount_handle;
+    tokio::select! {
+        _ = signal::ctrl_c() => {
+            info!("Received interrupt signal, unmounting...");
+        }
+        result = handle => {
+            match result {
+                Ok(()) => info!("Filesystem unmounted"),
+                Err(e) => error!(error = %e, "Filesystem error"),
+            }
         }
     }
 
@@ -353,6 +379,13 @@ fn unmount(mountpoint: &PathBuf) -> Result<()> {
         if !status.success() {
             anyhow::bail!("umount failed with status: {}", status);
         }
+    }
+
+    #[cfg(windows)]
+    {
+        // On Windows, unmount is handled by WinFSP when the process exits
+        // For explicit unmount, we would need to signal the running process
+        info!(mountpoint = %mountpoint.display(), "Windows: Unmount by terminating the mount process");
     }
 
     info!(mountpoint = %mountpoint.display(), "Filesystem unmounted");

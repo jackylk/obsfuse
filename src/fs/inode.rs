@@ -4,12 +4,12 @@
 //! mapping between paths and inodes.
 
 use dashmap::DashMap;
-use fuse3::FileType;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 use tracing::debug;
 
 use crate::config::PermissionConfig;
+use crate::fs::platform::{current_gid, current_uid, FileKind};
 
 /// Root inode number (FUSE convention)
 pub const ROOT_INODE: u64 = 1;
@@ -43,7 +43,7 @@ pub struct InodeEntry {
     pub ref_count: u64,
 }
 
-/// File attributes (compatible with FUSE)
+/// File attributes (platform-agnostic)
 #[derive(Debug, Clone)]
 pub struct FileAttr {
     /// Inode number
@@ -61,7 +61,7 @@ pub struct FileAttr {
     /// Creation time
     pub crtime: SystemTime,
     /// File type
-    pub kind: FileType,
+    pub kind: FileKind,
     /// Permission mode
     pub perm: u16,
     /// Number of hard links
@@ -89,11 +89,11 @@ impl Default for FileAttr {
             mtime: now,
             ctime: now,
             crtime: now,
-            kind: FileType::RegularFile,
+            kind: FileKind::RegularFile,
             perm: 0o644,
             nlink: 1,
-            uid: unsafe { libc::getuid() },
-            gid: unsafe { libc::getgid() },
+            uid: current_uid(),
+            gid: current_gid(),
             rdev: 0,
             blksize: 4096,
             flags: 0,
@@ -113,7 +113,7 @@ impl FileAttr {
             mtime: now,
             ctime: now,
             crtime: now,
-            kind: FileType::Directory,
+            kind: FileKind::Directory,
             perm: (mode & 0o7777) as u16,
             nlink: 2,
             uid,
@@ -136,7 +136,7 @@ impl FileAttr {
             mtime: now,
             ctime: now,
             crtime: now,
-            kind: FileType::RegularFile,
+            kind: FileKind::RegularFile,
             perm: (mode & 0o7777) as u16,
             nlink: 1,
             uid,
@@ -158,7 +158,7 @@ impl FileAttr {
             mtime: now,
             ctime: now,
             crtime: now,
-            kind: FileType::Symlink,
+            kind: FileKind::Symlink,
             perm: 0o777,
             nlink: 1,
             uid,
@@ -169,16 +169,17 @@ impl FileAttr {
         }
     }
 
-    /// Convert to fuse3 FileAttr
+    /// Convert to fuse3 FileAttr (Unix only)
+    #[cfg(unix)]
     pub fn to_fuse3(&self) -> fuse3::raw::prelude::FileAttr {
         fuse3::raw::prelude::FileAttr {
             ino: self.ino,
             size: self.size,
             blocks: self.blocks,
-            atime: systemtime_to_timestamp(self.atime),
-            mtime: systemtime_to_timestamp(self.mtime),
-            ctime: systemtime_to_timestamp(self.ctime),
-            kind: self.kind,
+            atime: systemtime_to_fuse_timestamp(self.atime),
+            mtime: systemtime_to_fuse_timestamp(self.mtime),
+            ctime: systemtime_to_fuse_timestamp(self.ctime),
+            kind: self.kind.into(),
             perm: self.perm,
             nlink: self.nlink,
             uid: self.uid,
@@ -186,15 +187,41 @@ impl FileAttr {
             rdev: self.rdev,
             blksize: self.blksize,
             #[cfg(target_os = "macos")]
-            crtime: systemtime_to_timestamp(self.crtime),
+            crtime: systemtime_to_fuse_timestamp(self.crtime),
             #[cfg(target_os = "macos")]
             flags: self.flags,
         }
     }
+
+    /// Convert to WinFSP FileInfo (Windows only)
+    #[cfg(windows)]
+    pub fn to_winfsp(&self) -> winfsp::FileInfo {
+        use crate::fs::platform::Timestamp;
+
+        let creation_time = Timestamp::from(self.crtime).to_filetime();
+        let last_access_time = Timestamp::from(self.atime).to_filetime();
+        let last_write_time = Timestamp::from(self.mtime).to_filetime();
+        let change_time = Timestamp::from(self.ctime).to_filetime();
+
+        winfsp::FileInfo {
+            file_attributes: self.kind.to_win_attrs(),
+            reparse_tag: 0,
+            allocation_size: self.blocks * 512,
+            file_size: self.size,
+            creation_time,
+            last_access_time,
+            last_write_time,
+            change_time,
+            index_number: self.ino,
+            hard_links: self.nlink,
+            ea_size: 0,
+        }
+    }
 }
 
-/// Convert SystemTime to fuse3 Timestamp
-fn systemtime_to_timestamp(st: SystemTime) -> fuse3::Timestamp {
+/// Convert SystemTime to fuse3 Timestamp (Unix only)
+#[cfg(unix)]
+fn systemtime_to_fuse_timestamp(st: SystemTime) -> fuse3::Timestamp {
     match st.duration_since(std::time::UNIX_EPOCH) {
         Ok(duration) => fuse3::Timestamp {
             sec: duration.as_secs() as i64,
@@ -451,6 +478,12 @@ impl InodeManager {
     /// Normalize path (remove leading/trailing slashes, handle empty)
     fn normalize_path(path: &str) -> String {
         let path = path.trim_matches('/');
+        // Also handle Windows-style path separators
+        #[cfg(windows)]
+        let path = path.replace('\\', "/");
+        #[cfg(windows)]
+        return path.trim_matches('/').to_string();
+        #[cfg(unix)]
         path.to_string()
     }
 

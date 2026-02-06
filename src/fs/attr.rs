@@ -1,12 +1,12 @@
 //! File attribute handling for OBS FUSE filesystem
 //!
-//! This module handles conversion between OBS metadata and FUSE file attributes.
+//! This module handles conversion between OBS metadata and file attributes.
 
-use fuse3::FileType;
 use std::time::SystemTime;
 
 use crate::config::{PermissionConfig, PermissionMode};
 use crate::fs::inode::FileAttr;
+use crate::fs::platform::FileKind;
 use crate::storage::ObjectMeta;
 
 /// Attribute builder for creating file attributes from OBS metadata
@@ -166,11 +166,11 @@ impl SetAttrFlags {
 }
 
 /// Determine file type from path
-pub fn file_type_from_path(path: &str) -> FileType {
+pub fn file_type_from_path(path: &str) -> FileKind {
     if path.ends_with('/') || path.is_empty() {
-        FileType::Directory
+        FileKind::Directory
     } else {
-        FileType::RegularFile
+        FileKind::RegularFile
     }
 }
 
@@ -213,7 +213,7 @@ mod tests {
         let attr = builder.from_object_meta(42, &meta);
         assert_eq!(attr.ino, 42);
         assert_eq!(attr.size, 1024);
-        assert_eq!(attr.kind, FileType::RegularFile);
+        assert_eq!(attr.kind, FileKind::RegularFile);
         assert_eq!(attr.uid, 1000);
         assert_eq!(attr.gid, 1000);
         assert_eq!(attr.perm, 0o644);
@@ -234,7 +234,7 @@ mod tests {
         };
 
         let attr = builder.from_object_meta(42, &meta);
-        assert_eq!(attr.kind, FileType::Directory);
+        assert_eq!(attr.kind, FileKind::Directory);
         assert_eq!(attr.perm, 0o755);
     }
 
