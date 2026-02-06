@@ -1,0 +1,563 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "OBS Filesystem Functional Test Specification",
+  "version": "1.0.0",
+  "description": "Shared test specification for obsfuse (Rust) and pyobs (Python)",
+  "config": {
+    "test_prefix_template": "{project}-functest-{timestamp}",
+    "default_timeout_ms": 30000,
+    "concurrent_levels": [1, 2, 4, 8],
+    "file_sizes": {
+      "tiny": 1,
+      "small": 1024,
+      "medium": 1048576,
+      "large": 104857600,
+      "huge": 5368709120
+    },
+    "huge_file_optional": true
+  },
+  "test_suites": [
+    {
+      "id": "file_operations",
+      "name": "File Operations",
+      "tests": [
+        {
+          "id": "F-C-01",
+          "name": "create_empty_file",
+          "category": "create",
+          "description": "Create an empty file",
+          "steps": [
+            {"action": "write", "path": "test_empty.txt", "data": ""},
+            {"action": "exists", "path": "test_empty.txt", "expect": true},
+            {"action": "stat", "path": "test_empty.txt", "expect": {"size": 0}}
+          ]
+        },
+        {
+          "id": "F-C-02",
+          "name": "create_with_content",
+          "category": "create",
+          "description": "Create a file with content",
+          "steps": [
+            {"action": "write", "path": "test_content.txt", "data": "Hello, OBS!"},
+            {"action": "read", "path": "test_content.txt", "expect": "Hello, OBS!"}
+          ]
+        },
+        {
+          "id": "F-C-03",
+          "name": "create_in_subdir",
+          "category": "create",
+          "description": "Create a file in subdirectory",
+          "steps": [
+            {"action": "mkdir", "path": "subdir"},
+            {"action": "write", "path": "subdir/file.txt", "data": "nested"},
+            {"action": "read", "path": "subdir/file.txt", "expect": "nested"}
+          ]
+        },
+        {
+          "id": "F-C-04",
+          "name": "create_special_chars",
+          "category": "create",
+          "description": "Create file with special characters in name",
+          "steps": [
+            {"action": "write", "path": "special 中文 émoji 🎉.txt", "data": "special"},
+            {"action": "exists", "path": "special 中文 émoji 🎉.txt", "expect": true}
+          ]
+        },
+        {
+          "id": "F-C-05",
+          "name": "create_long_name",
+          "category": "create",
+          "description": "Create file with maximum length name (255 chars)",
+          "steps": [
+            {"action": "write", "path": "{255_char_name}.txt", "data": "long"},
+            {"action": "exists", "path": "{255_char_name}.txt", "expect": true}
+          ],
+          "variables": {
+            "255_char_name": "a]repeat[250"
+          }
+        },
+        {
+          "id": "F-C-06",
+          "name": "create_deep_path",
+          "category": "create",
+          "description": "Create file in deeply nested path (20 levels)",
+          "steps": [
+            {"action": "write", "path": "{deep_path}/file.txt", "data": "deep"},
+            {"action": "read", "path": "{deep_path}/file.txt", "expect": "deep"}
+          ],
+          "variables": {
+            "deep_path": "d1/d2/d3/d4/d5/d6/d7/d8/d9/d10/d11/d12/d13/d14/d15/d16/d17/d18/d19/d20"
+          }
+        },
+        {
+          "id": "F-R-01",
+          "name": "read_full_file",
+          "category": "read",
+          "description": "Read entire file content",
+          "setup": [
+            {"action": "write", "path": "read_test.txt", "data_size": "medium"}
+          ],
+          "steps": [
+            {"action": "read", "path": "read_test.txt", "verify": "checksum"}
+          ]
+        },
+        {
+          "id": "F-R-02",
+          "name": "read_partial_start",
+          "category": "read",
+          "description": "Read partial file from start",
+          "setup": [
+            {"action": "write", "path": "partial.txt", "data": "0123456789ABCDEF"}
+          ],
+          "steps": [
+            {"action": "read_range", "path": "partial.txt", "offset": 0, "length": 4, "expect": "0123"}
+          ]
+        },
+        {
+          "id": "F-R-03",
+          "name": "read_partial_middle",
+          "category": "read",
+          "description": "Read partial file from middle",
+          "setup": [
+            {"action": "write", "path": "partial.txt", "data": "0123456789ABCDEF"}
+          ],
+          "steps": [
+            {"action": "read_range", "path": "partial.txt", "offset": 4, "length": 4, "expect": "4567"}
+          ]
+        },
+        {
+          "id": "F-R-04",
+          "name": "read_partial_end",
+          "category": "read",
+          "description": "Read partial file from end",
+          "setup": [
+            {"action": "write", "path": "partial.txt", "data": "0123456789ABCDEF"}
+          ],
+          "steps": [
+            {"action": "read_range", "path": "partial.txt", "offset": 12, "length": 4, "expect": "CDEF"}
+          ]
+        },
+        {
+          "id": "F-R-05",
+          "name": "read_beyond_eof",
+          "category": "read",
+          "description": "Read beyond end of file",
+          "setup": [
+            {"action": "write", "path": "small.txt", "data": "small"}
+          ],
+          "steps": [
+            {"action": "read_range", "path": "small.txt", "offset": 100, "length": 10, "expect": ""}
+          ]
+        },
+        {
+          "id": "F-R-06",
+          "name": "read_empty_file",
+          "category": "read",
+          "description": "Read empty file",
+          "setup": [
+            {"action": "write", "path": "empty.txt", "data": ""}
+          ],
+          "steps": [
+            {"action": "read", "path": "empty.txt", "expect": ""}
+          ]
+        },
+        {
+          "id": "F-R-07",
+          "name": "read_large_file",
+          "category": "read",
+          "description": "Read large file (100MB)",
+          "setup": [
+            {"action": "write", "path": "large.bin", "data_size": "large"}
+          ],
+          "steps": [
+            {"action": "read", "path": "large.bin", "verify": "checksum"}
+          ]
+        },
+        {
+          "id": "F-R-08",
+          "name": "read_nonexistent",
+          "category": "read",
+          "description": "Read non-existent file",
+          "steps": [
+            {"action": "read", "path": "nonexistent.txt", "expect_error": "ENOENT"}
+          ]
+        },
+        {
+          "id": "F-W-01",
+          "name": "write_new_file",
+          "category": "write",
+          "description": "Write to new file",
+          "steps": [
+            {"action": "write", "path": "new.txt", "data": "new content"},
+            {"action": "read", "path": "new.txt", "expect": "new content"}
+          ]
+        },
+        {
+          "id": "F-W-02",
+          "name": "write_overwrite",
+          "category": "write",
+          "description": "Overwrite existing file",
+          "setup": [
+            {"action": "write", "path": "overwrite.txt", "data": "old content"}
+          ],
+          "steps": [
+            {"action": "write", "path": "overwrite.txt", "data": "new content"},
+            {"action": "read", "path": "overwrite.txt", "expect": "new content"}
+          ]
+        },
+        {
+          "id": "F-W-05",
+          "name": "write_large_file",
+          "category": "write",
+          "description": "Write large file (100MB)",
+          "steps": [
+            {"action": "write", "path": "large_write.bin", "data_size": "large"},
+            {"action": "read", "path": "large_write.bin", "verify": "checksum"}
+          ]
+        },
+        {
+          "id": "F-W-06",
+          "name": "write_binary_data",
+          "category": "write",
+          "description": "Write binary data",
+          "steps": [
+            {"action": "write", "path": "binary.bin", "data_bytes": [0, 1, 255, 128, 64]},
+            {"action": "read", "path": "binary.bin", "expect_bytes": [0, 1, 255, 128, 64]}
+          ]
+        },
+        {
+          "id": "F-D-01",
+          "name": "delete_file",
+          "category": "delete",
+          "description": "Delete existing file",
+          "setup": [
+            {"action": "write", "path": "to_delete.txt", "data": "delete me"}
+          ],
+          "steps": [
+            {"action": "delete", "path": "to_delete.txt"},
+            {"action": "exists", "path": "to_delete.txt", "expect": false}
+          ]
+        },
+        {
+          "id": "F-D-02",
+          "name": "delete_nonexistent",
+          "category": "delete",
+          "description": "Delete non-existent file",
+          "steps": [
+            {"action": "delete", "path": "nonexistent.txt", "expect_error": "ENOENT"}
+          ]
+        },
+        {
+          "id": "F-M-01",
+          "name": "stat_file",
+          "category": "metadata",
+          "description": "Get file status",
+          "setup": [
+            {"action": "write", "path": "stat_test.txt", "data": "0123456789"}
+          ],
+          "steps": [
+            {"action": "stat", "path": "stat_test.txt", "expect": {"size": 10}}
+          ]
+        },
+        {
+          "id": "F-M-03",
+          "name": "exists_check",
+          "category": "metadata",
+          "description": "Check file existence",
+          "setup": [
+            {"action": "write", "path": "exists.txt", "data": "exists"}
+          ],
+          "steps": [
+            {"action": "exists", "path": "exists.txt", "expect": true},
+            {"action": "exists", "path": "not_exists.txt", "expect": false}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "directory_operations",
+      "name": "Directory Operations",
+      "tests": [
+        {
+          "id": "D-C-01",
+          "name": "mkdir_simple",
+          "category": "create",
+          "description": "Create simple directory",
+          "steps": [
+            {"action": "mkdir", "path": "newdir"},
+            {"action": "exists", "path": "newdir/", "expect": true}
+          ]
+        },
+        {
+          "id": "D-C-02",
+          "name": "mkdir_nested",
+          "category": "create",
+          "description": "Create nested directories",
+          "steps": [
+            {"action": "mkdir", "path": "a/b/c", "recursive": true},
+            {"action": "exists", "path": "a/b/c/", "expect": true}
+          ]
+        },
+        {
+          "id": "D-L-01",
+          "name": "list_empty_dir",
+          "category": "list",
+          "description": "List empty directory",
+          "setup": [
+            {"action": "mkdir", "path": "empty_dir"}
+          ],
+          "steps": [
+            {"action": "list", "path": "empty_dir/", "expect_count": 0}
+          ]
+        },
+        {
+          "id": "D-L-02",
+          "name": "list_with_files",
+          "category": "list",
+          "description": "List directory with files",
+          "setup": [
+            {"action": "mkdir", "path": "files_dir"},
+            {"action": "write", "path": "files_dir/a.txt", "data": "a"},
+            {"action": "write", "path": "files_dir/b.txt", "data": "b"},
+            {"action": "write", "path": "files_dir/c.txt", "data": "c"}
+          ],
+          "steps": [
+            {"action": "list", "path": "files_dir/", "expect_contains": ["a.txt", "b.txt", "c.txt"]}
+          ]
+        },
+        {
+          "id": "D-L-05",
+          "name": "list_large_dir",
+          "category": "list",
+          "description": "List directory with 1000+ entries",
+          "setup": [
+            {"action": "mkdir", "path": "large_dir"},
+            {"action": "create_files", "path": "large_dir/file_{i}.txt", "count": 1000, "data": "x"}
+          ],
+          "steps": [
+            {"action": "list", "path": "large_dir/", "expect_count": 1000}
+          ]
+        },
+        {
+          "id": "D-D-01",
+          "name": "rmdir_empty",
+          "category": "delete",
+          "description": "Remove empty directory",
+          "setup": [
+            {"action": "mkdir", "path": "to_remove"}
+          ],
+          "steps": [
+            {"action": "rmdir", "path": "to_remove"},
+            {"action": "exists", "path": "to_remove/", "expect": false}
+          ]
+        },
+        {
+          "id": "D-D-02",
+          "name": "rmdir_nonempty",
+          "category": "delete",
+          "description": "Remove non-empty directory",
+          "setup": [
+            {"action": "mkdir", "path": "nonempty"},
+            {"action": "write", "path": "nonempty/file.txt", "data": "content"}
+          ],
+          "steps": [
+            {"action": "rmdir", "path": "nonempty", "expect_error": "ENOTEMPTY"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rename_operations",
+      "name": "Rename/Move Operations",
+      "tests": [
+        {
+          "id": "R-01",
+          "name": "rename_file_same_dir",
+          "category": "rename",
+          "description": "Rename file in same directory",
+          "setup": [
+            {"action": "write", "path": "old_name.txt", "data": "content"}
+          ],
+          "steps": [
+            {"action": "rename", "from": "old_name.txt", "to": "new_name.txt"},
+            {"action": "exists", "path": "old_name.txt", "expect": false},
+            {"action": "exists", "path": "new_name.txt", "expect": true},
+            {"action": "read", "path": "new_name.txt", "expect": "content"}
+          ]
+        },
+        {
+          "id": "R-02",
+          "name": "rename_file_cross_dir",
+          "category": "rename",
+          "description": "Move file to different directory",
+          "setup": [
+            {"action": "write", "path": "src/file.txt", "data": "content"},
+            {"action": "mkdir", "path": "dst"}
+          ],
+          "steps": [
+            {"action": "rename", "from": "src/file.txt", "to": "dst/file.txt"},
+            {"action": "exists", "path": "src/file.txt", "expect": false},
+            {"action": "read", "path": "dst/file.txt", "expect": "content"}
+          ]
+        },
+        {
+          "id": "R-05",
+          "name": "rename_nonexistent",
+          "category": "rename",
+          "description": "Rename non-existent file",
+          "steps": [
+            {"action": "rename", "from": "nonexistent.txt", "to": "new.txt", "expect_error": "ENOENT"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "copy_operations",
+      "name": "Copy Operations",
+      "tests": [
+        {
+          "id": "C-01",
+          "name": "copy_file",
+          "category": "copy",
+          "description": "Copy file",
+          "setup": [
+            {"action": "write", "path": "original.txt", "data": "original content"}
+          ],
+          "steps": [
+            {"action": "copy", "from": "original.txt", "to": "copied.txt"},
+            {"action": "exists", "path": "original.txt", "expect": true},
+            {"action": "read", "path": "copied.txt", "expect": "original content"}
+          ]
+        },
+        {
+          "id": "C-02",
+          "name": "copy_large_file",
+          "category": "copy",
+          "description": "Copy large file (100MB)",
+          "setup": [
+            {"action": "write", "path": "large_orig.bin", "data_size": "large"}
+          ],
+          "steps": [
+            {"action": "copy", "from": "large_orig.bin", "to": "large_copy.bin"},
+            {"action": "read", "path": "large_copy.bin", "verify": "checksum"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "consistency",
+      "name": "Consistency Tests",
+      "tests": [
+        {
+          "id": "CS-01",
+          "name": "raw_single",
+          "category": "read_after_write",
+          "description": "Single-thread read-after-write consistency",
+          "steps": [
+            {"action": "write", "path": "raw_test.txt", "data_size": "medium"},
+            {"action": "read", "path": "raw_test.txt", "verify": "checksum"}
+          ],
+          "iterations": 100
+        },
+        {
+          "id": "CS-02",
+          "name": "raw_concurrent",
+          "category": "read_after_write",
+          "description": "Multi-thread read-after-write consistency",
+          "concurrent": true,
+          "threads": [1, 2, 4, 8],
+          "steps": [
+            {"action": "write", "path": "raw_t{thread_id}.txt", "data_size": "small"},
+            {"action": "read", "path": "raw_t{thread_id}.txt", "verify": "checksum"}
+          ],
+          "expect": "all_match"
+        },
+        {
+          "id": "CS-06",
+          "name": "create_visible",
+          "category": "metadata",
+          "description": "File visible immediately after creation",
+          "steps": [
+            {"action": "write", "path": "visible.txt", "data": "test"},
+            {"action": "exists", "path": "visible.txt", "expect": true, "immediate": true}
+          ]
+        },
+        {
+          "id": "CS-07",
+          "name": "delete_invisible",
+          "category": "metadata",
+          "description": "File invisible immediately after deletion",
+          "setup": [
+            {"action": "write", "path": "invisible.txt", "data": "test"}
+          ],
+          "steps": [
+            {"action": "delete", "path": "invisible.txt"},
+            {"action": "exists", "path": "invisible.txt", "expect": false, "immediate": true}
+          ]
+        },
+        {
+          "id": "CS-10",
+          "name": "rename_atomic",
+          "category": "atomicity",
+          "description": "Rename operation is atomic",
+          "setup": [
+            {"action": "write", "path": "atomic_old.txt", "data": "atomic"}
+          ],
+          "steps": [
+            {"action": "rename", "from": "atomic_old.txt", "to": "atomic_new.txt"},
+            {"action": "xor_exists", "paths": ["atomic_old.txt", "atomic_new.txt"], "expect": "exactly_one"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "boundary_conditions",
+      "name": "Boundary Condition Tests",
+      "tests": [
+        {
+          "id": "BC-01",
+          "name": "empty_filename",
+          "category": "boundary",
+          "description": "Empty filename should fail",
+          "steps": [
+            {"action": "write", "path": "", "data": "test", "expect_error": "EINVAL"}
+          ]
+        },
+        {
+          "id": "BC-04",
+          "name": "zero_byte_write",
+          "category": "boundary",
+          "description": "Write zero bytes",
+          "setup": [
+            {"action": "write", "path": "zero.txt", "data": "original"}
+          ],
+          "steps": [
+            {"action": "write", "path": "zero.txt", "data": ""},
+            {"action": "stat", "path": "zero.txt", "expect": {"size": 0}}
+          ]
+        },
+        {
+          "id": "BC-05",
+          "name": "huge_file",
+          "category": "boundary",
+          "optional": true,
+          "description": "5GB file (multipart upload)",
+          "steps": [
+            {"action": "write", "path": "huge.bin", "data_size": "huge"},
+            {"action": "stat", "path": "huge.bin", "expect": {"size": 5368709120}}
+          ]
+        },
+        {
+          "id": "BC-07",
+          "name": "dot_files",
+          "category": "boundary",
+          "description": "Hidden files (dot prefix)",
+          "steps": [
+            {"action": "write", "path": ".hidden", "data": "hidden"},
+            {"action": "read", "path": ".hidden", "expect": "hidden"}
+          ]
+        }
+      ]
+    }
+  ]
+}

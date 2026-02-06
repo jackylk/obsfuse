@@ -9,6 +9,10 @@ repository = "https://github.com/obsfuse/obsfuse"
 keywords = ["fuse", "obs", "filesystem", "cloud-storage"]
 categories = ["filesystem", "asynchronous"]
 
+[features]
+default = []
+obs-bench = []  # Enable OBS integration benchmarks (requires credentials)
+
 [dependencies]
 # FUSE - async-first design for I/O intensive operations
 fuse3 = { version = "0.8", features = ["tokio-runtime", "unprivileged"] }
@@ -57,8 +61,9 @@ dirs = "5"
 
 [dev-dependencies]
 tempfile = "3"
-criterion = "0.5"
+criterion = { version = "0.5", features = ["html_reports"] }
 tokio-test = "0.4"
+serde_json = "1"
 
 [[bin]]
 name = "obsfuse"
@@ -67,6 +72,14 @@ path = "src/main.rs"
 [[bench]]
 name = "benchmark"
 harness = false
+
+[[test]]
+name = "consistency"
+path = "benches/consistency_tests.rs"
+
+[[test]]
+name = "functional"
+path = "tests/functional_test.rs"
 
 [profile.release]
 opt-level = 3

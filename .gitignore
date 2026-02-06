@@ -32,11 +32,9 @@ logs/
 # Test artifacts
 /test-mount/
 /tmp/
+/test-reports/
 
 # Coverage
 /coverage/
 *.profraw
 *.profdata
-
-# Documentation
-/doc/

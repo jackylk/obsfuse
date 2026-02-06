@@ -1,0 +1,414 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "OBS Filesystem Benchmark Specification",
+  "version": "1.0.0",
+  "description": "Shared benchmark specification for obsfuse (Rust) and pyobs (Python)",
+  "config": {
+    "modes": {
+      "quick": {
+        "sample_size": 10,
+        "measurement_time_sec": 1,
+        "warmup_time_sec": 1
+      },
+      "normal": {
+        "sample_size": 50,
+        "measurement_time_sec": 5,
+        "warmup_time_sec": 3
+      },
+      "full": {
+        "sample_size": 100,
+        "measurement_time_sec": 10,
+        "warmup_time_sec": 5
+      }
+    },
+    "concurrent_levels": [1, 2, 4, 8, 16, 32],
+    "file_sizes": {
+      "tiny": 1,
+      "small": 1024,
+      "medium": 65536,
+      "large": 1048576,
+      "xlarge": 104857600
+    },
+    "regression_thresholds": {
+      "warning_percent": 10,
+      "failure_percent": 20
+    }
+  },
+  "benchmark_suites": [
+    {
+      "id": "inode",
+      "name": "Inode Operations",
+      "category": "local",
+      "benchmarks": [
+        {
+          "id": "inode/create",
+          "name": "Create new inode",
+          "description": "Measure time to create a new inode for a path",
+          "operation": "get_or_create_inode",
+          "expected_ops_per_sec": 500000,
+          "unit": "ops/sec"
+        },
+        {
+          "id": "inode/lookup",
+          "name": "Lookup existing inode",
+          "description": "Measure time to lookup an existing inode by path",
+          "operation": "get_inode",
+          "setup": "pre_create_10000_inodes",
+          "expected_ops_per_sec": 1000000,
+          "unit": "ops/sec"
+        },
+        {
+          "id": "inode/get_path",
+          "name": "Get path from inode",
+          "description": "Measure time to get path from inode number",
+          "operation": "get_path",
+          "expected_ops_per_sec": 1000000,
+          "unit": "ops/sec"
+        },
+        {
+          "id": "inode/update_size",
+          "name": "Update file size",
+          "description": "Measure time to update inode size",
+          "operation": "update_size",
+          "expected_ops_per_sec": 500000,
+          "unit": "ops/sec"
+        },
+        {
+          "id": "inode/rename",
+          "name": "Rename operation",
+          "description": "Measure time to rename a path",
+          "operation": "rename",
+          "expected_ops_per_sec": 200000,
+          "unit": "ops/sec"
+        }
+      ]
+    },
+    {
+      "id": "cache",
+      "name": "Cache Operations",
+      "category": "local",
+      "benchmarks": [
+        {
+          "id": "cache/metadata_put",
+          "name": "Put metadata in cache",
+          "description": "Measure time to cache file attributes",
+          "operation": "put_attr",
+          "expected_ops_per_sec": 500000,
+          "unit": "ops/sec"
+        },
+        {
+          "id": "cache/metadata_get_hit",
+          "name": "Get metadata (cache hit)",
+          "description": "Measure time to retrieve cached attributes",
+          "operation": "get_attr",
+          "setup": "pre_populate_cache",
+          "expected_ops_per_sec": 2000000,
+          "unit": "ops/sec"
+        },
+        {
+          "id": "cache/metadata_get_miss",
+          "name": "Get metadata (cache miss)",
+          "description": "Measure time for cache miss",
+          "operation": "get_attr",
+          "expected_ops_per_sec": 1000000,
+          "unit": "ops/sec"
+        },
+        {
+          "id": "cache/data_put_4KB",
+          "name": "Put 4KB data block",
+          "description": "Measure throughput for caching 4KB blocks",
+          "operation": "put",
+          "data_size": 4096,
+          "expected_throughput_gbps": 10,
+          "unit": "GB/s"
+        },
+        {
+          "id": "cache/data_put_64KB",
+          "name": "Put 64KB data block",
+          "description": "Measure throughput for caching 64KB blocks",
+          "operation": "put",
+          "data_size": 65536,
+          "expected_throughput_gbps": 10,
+          "unit": "GB/s"
+        },
+        {
+          "id": "cache/data_get_hit",
+          "name": "Get data (cache hit)",
+          "description": "Measure throughput for reading cached data",
+          "operation": "get",
+          "setup": "pre_populate_data_cache",
+          "expected_throughput_gbps": 20,
+          "unit": "GB/s"
+        },
+        {
+          "id": "cache/invalidate",
+          "name": "Invalidate cache",
+          "description": "Measure time to invalidate cached data for an inode",
+          "operation": "invalidate",
+          "expected_ops_per_sec": 100000,
+          "unit": "ops/sec"
+        }
+      ]
+    },
+    {
+      "id": "path",
+      "name": "Path Operations",
+      "category": "local",
+      "benchmarks": [
+        {
+          "id": "path/join",
+          "name": "Join paths",
+          "description": "Measure time to join parent and child paths",
+          "operation": "join_path",
+          "expected_ops_per_sec": 10000000,
+          "unit": "ops/sec"
+        },
+        {
+          "id": "path/parent",
+          "name": "Get parent path",
+          "description": "Measure time to extract parent path",
+          "operation": "parent_path",
+          "expected_ops_per_sec": 10000000,
+          "unit": "ops/sec"
+        },
+        {
+          "id": "path/filename",
+          "name": "Get filename",
+          "description": "Measure time to extract filename from path",
+          "operation": "file_name",
+          "expected_ops_per_sec": 10000000,
+          "unit": "ops/sec"
+        }
+      ]
+    },
+    {
+      "id": "readahead",
+      "name": "Readahead Operations",
+      "category": "local",
+      "benchmarks": [
+        {
+          "id": "readahead/record",
+          "name": "Record read access",
+          "description": "Measure time to record a read access for pattern detection",
+          "operation": "record_read",
+          "expected_ops_per_sec": 1000000,
+          "unit": "ops/sec"
+        },
+        {
+          "id": "readahead/detect_sequential",
+          "name": "Detect sequential pattern",
+          "description": "Measure time to detect sequential read pattern",
+          "operation": "detect_sequential",
+          "expected_ops_per_sec": 500000,
+          "unit": "ops/sec"
+        },
+        {
+          "id": "readahead/store_prefetch",
+          "name": "Store prefetched data",
+          "description": "Measure throughput for storing prefetched data",
+          "operation": "store_prefetched",
+          "data_size": 65536,
+          "expected_throughput_gbps": 5,
+          "unit": "GB/s"
+        },
+        {
+          "id": "readahead/get_prefetch",
+          "name": "Get prefetched data",
+          "description": "Measure time to retrieve prefetched data",
+          "operation": "get_prefetched",
+          "expected_ops_per_sec": 1000000,
+          "unit": "ops/sec"
+        }
+      ]
+    },
+    {
+      "id": "concurrent_inode",
+      "name": "Concurrent Inode Operations",
+      "category": "concurrent",
+      "benchmarks": [
+        {
+          "id": "concurrent/inode_create",
+          "name": "Concurrent inode creation",
+          "description": "Measure throughput of concurrent inode creation",
+          "operation": "get_or_create_inode",
+          "concurrent_levels": [1, 2, 4, 8, 16, 32],
+          "expect": "linear_scaling"
+        },
+        {
+          "id": "concurrent/inode_lookup_contention",
+          "name": "Concurrent lookup (contention)",
+          "description": "Measure throughput when multiple threads access same inodes",
+          "operation": "get_inode",
+          "concurrent_levels": [1, 2, 4, 8, 16, 32],
+          "setup": "pre_create_shared_inodes"
+        },
+        {
+          "id": "concurrent/inode_mixed_rw",
+          "name": "Mixed read-write workload",
+          "description": "80% read, 20% write workload",
+          "operations": ["get_inode", "get_or_create_inode"],
+          "read_write_ratio": "80:20",
+          "concurrent_levels": [1, 2, 4, 8, 16, 32]
+        }
+      ]
+    },
+    {
+      "id": "concurrent_cache",
+      "name": "Concurrent Cache Operations",
+      "category": "concurrent",
+      "benchmarks": [
+        {
+          "id": "concurrent/cache_put",
+          "name": "Concurrent cache put",
+          "description": "Measure throughput of concurrent cache writes",
+          "operation": "put_attr",
+          "concurrent_levels": [1, 2, 4, 8, 16, 32]
+        },
+        {
+          "id": "concurrent/cache_get_hotspot",
+          "name": "Concurrent cache get (hotspot)",
+          "description": "80% of accesses to 20% of data (Zipf distribution)",
+          "operation": "get_attr",
+          "access_pattern": "hotspot_80_20",
+          "concurrent_levels": [1, 2, 4, 8, 16, 32]
+        },
+        {
+          "id": "concurrent/data_cache_put",
+          "name": "Concurrent data cache put",
+          "description": "Measure throughput of concurrent data cache writes",
+          "operation": "put",
+          "data_size": 65536,
+          "concurrent_levels": [1, 2, 4, 8, 16, 32]
+        }
+      ]
+    },
+    {
+      "id": "obs",
+      "name": "OBS Integration",
+      "category": "obs",
+      "requires_credentials": true,
+      "benchmarks": [
+        {
+          "id": "obs/write_1KB",
+          "name": "Write 1KB file",
+          "description": "Measure small file write latency",
+          "operation": "write",
+          "data_size": 1024,
+          "unit": "ms"
+        },
+        {
+          "id": "obs/write_1MB",
+          "name": "Write 1MB file",
+          "description": "Measure medium file write throughput",
+          "operation": "write",
+          "data_size": 1048576,
+          "unit": "MB/s"
+        },
+        {
+          "id": "obs/write_100MB",
+          "name": "Write 100MB file",
+          "description": "Measure large file write throughput",
+          "operation": "write",
+          "data_size": 104857600,
+          "unit": "MB/s"
+        },
+        {
+          "id": "obs/read_1KB",
+          "name": "Read 1KB file",
+          "description": "Measure small file read latency",
+          "operation": "read",
+          "data_size": 1024,
+          "unit": "ms"
+        },
+        {
+          "id": "obs/read_1MB",
+          "name": "Read 1MB file",
+          "description": "Measure medium file read throughput",
+          "operation": "read",
+          "data_size": 1048576,
+          "unit": "MB/s"
+        },
+        {
+          "id": "obs/read_100MB",
+          "name": "Read 100MB file",
+          "description": "Measure large file read throughput",
+          "operation": "read",
+          "data_size": 104857600,
+          "unit": "MB/s"
+        },
+        {
+          "id": "obs/read_range",
+          "name": "Range read 64KB",
+          "description": "Measure range read performance",
+          "operation": "read_range",
+          "data_size": 65536,
+          "unit": "ms"
+        },
+        {
+          "id": "obs/stat",
+          "name": "Get file stat",
+          "description": "Measure metadata retrieval latency",
+          "operation": "stat",
+          "unit": "ms"
+        },
+        {
+          "id": "obs/list_100",
+          "name": "List directory (100 files)",
+          "description": "Measure directory listing time",
+          "operation": "list",
+          "file_count": 100,
+          "unit": "ms"
+        },
+        {
+          "id": "obs/delete",
+          "name": "Delete file",
+          "description": "Measure file deletion latency",
+          "operation": "delete",
+          "unit": "ms"
+        },
+        {
+          "id": "obs/copy",
+          "name": "Copy 1MB file",
+          "description": "Measure file copy throughput",
+          "operation": "copy",
+          "data_size": 1048576,
+          "unit": "MB/s"
+        }
+      ]
+    },
+    {
+      "id": "obs_concurrent",
+      "name": "OBS Concurrent Operations",
+      "category": "obs",
+      "requires_credentials": true,
+      "benchmarks": [
+        {
+          "id": "obs_concurrent/read_1MB",
+          "name": "Concurrent read 1MB",
+          "description": "Measure concurrent read throughput",
+          "operation": "read",
+          "data_size": 1048576,
+          "concurrent_levels": [1, 4, 8, 16, 32],
+          "unit": "MB/s"
+        },
+        {
+          "id": "obs_concurrent/write_1MB",
+          "name": "Concurrent write 1MB",
+          "description": "Measure concurrent write throughput",
+          "operation": "write",
+          "data_size": 1048576,
+          "concurrent_levels": [1, 4, 8, 16, 32],
+          "unit": "MB/s"
+        },
+        {
+          "id": "obs_concurrent/mixed",
+          "name": "Mixed read-write",
+          "description": "80% read, 20% write concurrent workload",
+          "operations": ["read", "write"],
+          "read_write_ratio": "80:20",
+          "concurrent_levels": [1, 4, 8, 16, 32]
+        }
+      ]
+    }
+  ]
+}
