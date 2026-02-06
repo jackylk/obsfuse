@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:juicefs.com)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:aws.amazon.com)",
+      "WebFetch(domain:opendal.apache.org)",
+      "WebFetch(domain:www.kernel.org)",
+      "Bash(cargo check:*)",
+      "Bash(rustc:*)",
+      "Bash(cargo --version:*)",
+      "Bash(curl:*)",
+      "Bash(sh:*)",
+      "Bash(source:*)",
+      "Bash(export PATH=\"$HOME/.cargo/bin:$PATH\")",
+      "Bash(PATH=\"$HOME/.cargo/bin:$PATH\" cargo check:*)",
+      "Bash(PATH=\"$HOME/.cargo/bin:$PATH\" cargo doc:*)",
+      "Bash(cargo doc:*)",
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo build:*)",
+      "Bash(./target/release/obsfuse mount:*)",
+      "Bash(chmod:*)"
+    ]
+  }
+}

@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  obsfuse:
+    build: .
+    image: obsfuse:latest
+    container_name: obsfuse
+    privileged: true
+    # Alternative to privileged mode:
+    # cap_add:
+    #   - SYS_ADMIN
+    # devices:
+    #   - /dev/fuse
+    # security_opt:
+    #   - apparmor:unconfined
+    volumes:
+      - /mnt/obs:/mnt/obs:rshared
+      # Optional: persist cache
+      # - obsfuse-cache:/var/cache/obsfuse
+    environment:
+      - OBS_ACCESS_KEY=${OBS_ACCESS_KEY}
+      - OBS_SECRET_KEY=${OBS_SECRET_KEY}
+      - OBS_BUCKET=${OBS_BUCKET}
+      - OBS_ENDPOINT=${OBS_ENDPOINT:-obs.cn-north-1.myhuaweicloud.com}
+      - OBS_REGION=${OBS_REGION:-cn-north-1}
+      - OBS_PREFIX=${OBS_PREFIX:-}
+      - ALLOW_OTHER=${ALLOW_OTHER:-false}
+      - READ_ONLY=${READ_ONLY:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ls", "/mnt/obs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+# volumes:
+#   obsfuse-cache:

@@ -1,0 +1,79 @@
+[package]
+name = "obsfuse"
+version = "0.1.0"
+edition = "2021"
+authors = ["OBS FUSE Team"]
+description = "High-performance FUSE filesystem for Huawei Cloud OBS"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/obsfuse/obsfuse"
+keywords = ["fuse", "obs", "filesystem", "cloud-storage"]
+categories = ["filesystem", "asynchronous"]
+
+[dependencies]
+# FUSE - async-first design for I/O intensive operations
+fuse3 = { version = "0.8", features = ["tokio-runtime", "unprivileged"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Object storage abstraction (native OBS support)
+opendal = { version = "0.55", features = ["services-obs"] }
+
+# Concurrent data structures
+dashmap = "6"
+parking_lot = "0.12"
+
+# Caching
+lru = "0.12"
+moka = { version = "0.12", features = ["future"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# Command line interface
+clap = { version = "4", features = ["derive", "env"] }
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+bytes = "1"
+bytesize = { version = "1", features = ["serde"] }
+anyhow = "1"
+thiserror = "1"
+async-trait = "0.1"
+futures = "0.3"
+libc = "0.2"
+nix = { version = "0.29", features = ["fs", "user"] }
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+humantime = "2"
+
+# Directory utilities
+dirs = "5"
+
+[dev-dependencies]
+tempfile = "3"
+criterion = "0.5"
+tokio-test = "0.4"
+
+[[bin]]
+name = "obsfuse"
+path = "src/main.rs"
+
+[[bench]]
+name = "benchmark"
+harness = false
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+debug = true
