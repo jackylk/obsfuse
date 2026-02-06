@@ -146,6 +146,19 @@ pub fn obs_benchmarks(c: &mut Criterion) {
         });
     });
 
+    // Mkdir benchmark
+    group.bench_function("mkdir", |b| {
+        let counter = AtomicU64::new(0);
+
+        b.iter(|| {
+            let id = counter.fetch_add(1, Ordering::Relaxed);
+            let path = test_path(&format!("mkdir_bench_{}/", id));
+            rt.block_on(async {
+                black_box(op.create_dir(&path).await.unwrap());
+            });
+        });
+    });
+
     // List benchmark - prepare directory with files
     rt.block_on(async {
         for i in 0..100 {
@@ -154,7 +167,7 @@ pub fn obs_benchmarks(c: &mut Criterion) {
         }
     });
 
-    group.bench_function("list_100_files", |b| {
+    group.bench_function("list_100", |b| {
         let prefix = test_path("list_dir/");
         b.iter(|| {
             rt.block_on(async {
