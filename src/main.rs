@@ -175,8 +175,12 @@ async fn main() -> Result<()> {
 
             // Apply command-line overrides
             config.obs.bucket = bucket;
+            config.obs.region = region;
             if let Some(ep) = endpoint {
                 config.obs.endpoint = ep;
+            } else {
+                // Derive endpoint from region if not explicitly provided
+                config.obs.endpoint = format!("obs.{}.myhuaweicloud.com", config.obs.region);
             }
             if let Some(ak) = access_key {
                 config.obs.access_key = Some(ak);
@@ -184,7 +188,6 @@ async fn main() -> Result<()> {
             if let Some(sk) = secret_key {
                 config.obs.secret_key = Some(sk);
             }
-            config.obs.region = region;
             config.obs.prefix = prefix;
 
             if let Some(dir) = cache_dir {
@@ -271,9 +274,21 @@ async fn mount_unix(config: Config, metrics: Arc<Metrics>, mountpoint: &PathBuf)
     use fuse3::MountOptions;
     use tokio::signal;
 
+    // Install panic hook to clean up stale mount on panic
+    let panic_mountpoint = mountpoint.clone();
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        eprintln!("obsfuse panicked, cleaning up mount at {}", panic_mountpoint.display());
+        force_unmount(&panic_mountpoint);
+        prev_hook(info);
+    }));
+
     // Create filesystem
     let fs = ObsFs::new(config.clone(), metrics.clone())
         .context("Failed to create filesystem")?;
+
+    // Clean up stale mount if present
+    cleanup_stale_mount(mountpoint);
 
     // Ensure mount point exists
     if !mountpoint.exists() {
@@ -307,18 +322,17 @@ async fn mount_unix(config: Config, metrics: Arc<Metrics>, mountpoint: &PathBuf)
 
     info!("Filesystem mounted successfully");
 
-    // Handle signals
-    let handle = mount_handle;
-    tokio::select! {
-        _ = signal::ctrl_c() => {
-            info!("Received interrupt signal, unmounting...");
-        }
-        result = handle => {
-            match result {
-                Ok(()) => info!("Filesystem unmounted"),
-                Err(e) => error!(error = %e, "Filesystem error"),
-            }
-        }
+    // Wait for ctrl_c, then explicitly unmount.
+    // If the FUSE session ends on its own (external umount or error),
+    // mount_handle.unmount() will still clean up properly.
+    signal::ctrl_c().await.ok();
+    info!("Received interrupt signal, unmounting...");
+
+    if let Err(e) = mount_handle.unmount().await {
+        error!(error = %e, "Clean unmount failed, forcing cleanup");
+        force_unmount(mountpoint);
+    } else {
+        info!("Filesystem unmounted cleanly");
     }
 
     Ok(())
@@ -344,6 +358,70 @@ fn init_logging(level: &str, log_file: Option<&PathBuf>) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Force unmount a mountpoint using platform-specific commands
+#[cfg(unix)]
+fn force_unmount(mountpoint: &PathBuf) {
+    use std::process::Command;
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("diskutil")
+            .args(["unmount", "force"])
+            .arg(mountpoint)
+            .output();
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let _ = Command::new("fusermount")
+            .args(["-u", "-z"]) // -z for lazy unmount
+            .arg(mountpoint)
+            .output();
+    }
+}
+
+/// Check if a mountpoint has a stale FUSE mount and clean it up
+#[cfg(unix)]
+fn cleanup_stale_mount(mountpoint: &PathBuf) {
+    use tracing::warn;
+
+    // Check if the mountpoint exists and is a stale mount
+    if !mountpoint.exists() {
+        return;
+    }
+
+    // Try to stat the mountpoint - if it fails with "Device not configured" or similar,
+    // it's a stale mount
+    match std::fs::read_dir(mountpoint) {
+        Ok(_) => return, // Mountpoint is accessible, not stale
+        Err(e) => {
+            let raw_error = e.raw_os_error();
+            // ENXIO (6) = "Device not configured" on macOS
+            // EIO (5) = "Input/output error"
+            // ENOTCONN (57) = "Socket is not connected" (sometimes seen with FUSE)
+            if raw_error != Some(libc::ENXIO)
+                && raw_error != Some(libc::EIO)
+                && raw_error != Some(libc::ENOTCONN)
+            {
+                return;
+            }
+            warn!(
+                mountpoint = %mountpoint.display(),
+                error = %e,
+                "Detected stale mount, attempting cleanup"
+            );
+        }
+    }
+
+    force_unmount(mountpoint);
+
+    // Verify cleanup succeeded
+    match std::fs::read_dir(mountpoint) {
+        Ok(_) => info!(mountpoint = %mountpoint.display(), "Stale mount cleaned up successfully"),
+        Err(_) => warn!(mountpoint = %mountpoint.display(), "Failed to clean up stale mount"),
+    }
 }
 
 /// Parse permission mode string (e.g., "0644" or "644")

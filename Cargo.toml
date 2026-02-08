@@ -91,6 +91,10 @@ path = "benches/consistency_tests.rs"
 name = "functional"
 path = "tests/functional_test.rs"
 
+[[example]]
+name = "test_connection"
+path = "examples/test_connection.rs"
+
 [profile.release]
 opt-level = 3
 lto = true

@@ -57,7 +57,6 @@ pub fn obs_benchmarks(c: &mut Criterion) {
         (64 * 1024, "64KB"),
         (1024 * 1024, "1MB"),
         (10 * 1024 * 1024, "10MB"),
-        (100 * 1024 * 1024, "100MB"),
     ];
 
     for (size, label) in &sizes {
@@ -111,10 +110,10 @@ pub fn obs_benchmarks(c: &mut Criterion) {
     // Range read benchmark
     group.throughput(Throughput::Bytes(64 * 1024));
     group.bench_function("read_range_64KB", |b| {
-        let path = test_path("read_100MB");
+        let path = test_path("read_10MB");
         let mut offset = 0u64;
         b.iter(|| {
-            offset = (offset + 65536) % (90 * 1024 * 1024); // Stay within file
+            offset = (offset + 65536) % (9 * 1024 * 1024); // Stay within file
             rt.block_on(async {
                 black_box(
                     op.read_with(&path)
